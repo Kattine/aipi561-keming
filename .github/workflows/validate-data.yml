@@ -2,7 +2,7 @@ name: Data Quality Check
 
 on:
   schedule:
-    - cron: '0 * * * *'  # TODO: Choose your frequency (15min? hourly? daily?)
+    - cron: '0 * * * *'
   push:
     branches: [main]
     paths:
@@ -13,10 +13,9 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v3
-        with:
-          lfs: true
+      - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -25,33 +24,25 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pandas pyarrow numpy
+          pip install pandas pyarrow numpy lightgbm>=4.5.0 pytest
 
       - name: Run data quality validation
         id: validate
         run: |
           cd week3
-          # TODO: Implement this
-          # - Load baseline and current data
-          # - Run your validation checks
-          # - Report findings
-          # - Exit with error if validation fails
-          python3 -m validation.check_data_quality
+          python -m validation.check_data_quality
 
-      - name: Upload validation results
-        if: always()
-        uses: actions/upload-artifact@v3
-        with:
-          name: validation-report
-          path: week3/validation-results.json
+      - name: Run validation unit tests
+        run: |
+          cd week3
+          python -m pytest validation/test_data_quality.py -v --tb=short
 
       - name: Block deployment if validation fails
         if: failure()
         run: |
-          echo "Data validation FAILED"
-          echo "Check logs above for issues"
+          echo "Data validation FAILED - deployment blocked."
           exit 1
 
       - name: Validation passed
         if: success()
-        run: echo "Data quality validation passed"
+        run: echo "Data quality validation passed - safe to deploy."
