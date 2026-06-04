@@ -1,0 +1,137 @@
+name: Drift Monitoring
+
+# DECISION: schedule = daily at 09:00 UTC.
+# Rationale:
+#   - Ground-truth labels for trip_count arrive with ~24h lag, so checking
+#     more often than daily does not provide fresher signal.
+#   - Daily cadence keeps CI cost low (~30 runs/month) and avoids alert
+#     fatigue; running hourly would create ~720 monitoring runs/month,
+#     90%+ of which would surface the same drift state.
+#   - 09:00 UTC = 04:00 ET = business low-traffic window for NYC.
+#   - workflow_dispatch is included so on-call can re-run on demand
+#     after deploying a fix.
+
+on:
+  schedule:
+    - cron: '0 9 * * *'         # daily 09:00 UTC
+  push:
+    branches: [main]
+    paths:
+      - 'week4/data/**'
+      - 'week4/scripts/**'
+      - 'week4/.github/workflows/monitor-drift.yml'
+  workflow_dispatch:
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write              # required to file alert issues
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pandas pyarrow numpy scipy
+
+      - name: Compute monitoring metrics
+        id: metrics
+        run: |
+          cd week4
+          # Load baseline & current, compute 8 metrics, write metrics-*.json.
+          # Exit non-zero only on overall=critical so warnings don't break CI.
+          python3 scripts/compute_metrics.py \
+            --baseline data/demand_enriched_baseline.parquet \
+            --current  data/demand_enriched_week4.parquet \
+            --window-days 7 \
+            --output-dir . \
+            --fail-on critical
+        continue-on-error: true   # let drift detection still run
+
+      - name: Detect drift patterns
+        id: drift
+        run: |
+          cd week4
+          # Run statistical tests and dump pattern findings.
+          # Returns non-zero if ANY pattern is detected.
+          python3 scripts/detect_drift.py \
+            --baseline data/demand_enriched_baseline.parquet \
+            --current  data/demand_enriched_week4.parquet \
+            --output   drift-report.json
+        continue-on-error: true
+
+      - name: Run monitoring tests
+        run: |
+          cd week4
+          python3 -m unittest scripts.test_monitoring -v
+
+      - name: Upload metrics artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitoring-metrics-${{ github.run_id }}
+          path: |
+            week4/metrics-*.json
+            week4/drift-report.json
+          retention-days: 90    # keep 3 months of history
+
+      - name: Create alert issue on critical drift
+        # Fire only if EITHER metric computation OR drift detection exited
+        # non-zero, i.e. something critical happened.
+        if: steps.metrics.outcome == 'failure' || steps.drift.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs   = require('fs');
+            const path = require('path');
+
+            // Find newest metrics-*.json (if any) for body context
+            let metricsSummary = "see workflow logs";
+            try {
+              const files = fs.readdirSync('week4')
+                              .filter(f => f.startsWith('metrics-') && f.endsWith('.json'))
+                              .sort().reverse();
+              if (files.length) {
+                const j = JSON.parse(fs.readFileSync(path.join('week4', files[0]), 'utf8'));
+                metricsSummary =
+                  `**Overall severity:** ${j.alerts._overall}\n` +
+                  `**Rows evaluated:** ${j.n_rows_evaluated}\n` +
+                  `**Alert breakdown:**\n` +
+                  Object.entries(j.alerts)
+                    .filter(([k]) => !k.startsWith('_'))
+                    .map(([k, v]) => `- \`${k}\`: ${v}`).join('\n');
+              }
+            } catch (e) { console.log('Could not parse metrics:', e.message); }
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              title: `[Drift Alert] ${new Date().toISOString().slice(0,10)} — monitoring critical`,
+              body:  `Monitoring workflow detected critical drift or threshold breach.\n\n` +
+                     `${metricsSummary}\n\n` +
+                     `**Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/` +
+                     `actions/runs/${context.runId}\n\n` +
+                     `**Suggested next steps:**\n` +
+                     `1. Review the metrics artifact attached to the run.\n` +
+                     `2. Verify the drift pattern is persistent (not a single-day anomaly).\n` +
+                     `3. If persistent for >= 3 windows or accuracy <70%, trigger retraining.\n`,
+              labels: ['drift-alert', 'monitoring'],
+            });
+
+      - name: Monitoring complete
+        if: steps.metrics.outcome == 'success' && steps.drift.outcome == 'success'
+        run: echo "Monitoring run completed cleanly - no critical drift."
+
+      - name: Fail the workflow if critical
+        # Surface failure status in GitHub UI even though we continue-on-error'd above.
+        if: steps.metrics.outcome == 'failure' || steps.drift.outcome == 'failure'
+        run: |
+          echo "::error::Critical drift detected - see issue and metrics artifact."
+          exit 1
