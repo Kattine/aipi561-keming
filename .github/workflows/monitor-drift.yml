@@ -1,16 +1,5 @@
 name: Drift Monitoring
 
-# DECISION: schedule = daily at 09:00 UTC.
-# Rationale:
-#   - Ground-truth labels for trip_count arrive with ~24h lag, so checking
-#     more often than daily does not provide fresher signal.
-#   - Daily cadence keeps CI cost low (~30 runs/month) and avoids alert
-#     fatigue; running hourly would create ~720 monitoring runs/month,
-#     90%+ of which would surface the same drift state.
-#   - 09:00 UTC = 04:00 ET = business low-traffic window for NYC.
-#   - workflow_dispatch is included so on-call can re-run on demand
-#     after deploying a fix.
-
 on:
   schedule:
     - cron: '0 9 * * *'         # daily 09:00 UTC
@@ -30,6 +19,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
