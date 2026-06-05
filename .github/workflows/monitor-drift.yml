@@ -19,8 +19,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-        with:
-          lfs: true
+        
 
       - name: Set up Python
         uses: actions/setup-python@v5
