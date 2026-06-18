@@ -133,7 +133,7 @@ class PolicySearchTool(Tool):
             return f"No policy documents found matching '{query}'"
         parts = []
         for rank, (score, doc) in enumerate(top, 1):
-            snippet = doc.get("content", "")[:500].strip()
+            snippet = doc.get("content", "")[:2000].strip()
             parts.append(
                 f"[{rank}] {doc.get('title', 'Untitled')} "
                 f"(Category: {doc.get('category', 'N/A')}, "
@@ -306,7 +306,7 @@ IMPORTANT: Respond ONLY with the JSON object. No explanation, no markdown fences
                     return f"No accessible policy documents found matching '{q}'"
                 parts = []
                 for rank, (_, doc) in enumerate(top, 1):
-                    snippet = doc.get("content", "")[:500].strip()
+                    snippet = doc.get("content", "")[:2000].strip()
                     parts.append(
                         f"[{rank}] {doc.get('title', 'Untitled')} "
                         f"(Category: {doc.get('category', 'N/A')})\n{snippet}..."
